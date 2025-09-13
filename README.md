@@ -1,85 +1,122 @@
+# BlueprintsRESTAPI
 
-# ARSW_Lab3
+## 1. Descripción General
+API REST para gestionar planos arquitectónicos (Blueprints). Provee operaciones para consultar todos los planos, consultar por autor, obtener un plano específico y crear/actualizar planos. Implementado con Spring Boot, Spring MVC, e inyección de dependencias basada en anotaciones.
 
-## Parte I
+## 2. Arquitectura / Componentes
+- Capa API (REST Controller): `BlueprintApiController` expone `/blueprints`.
+- Capa de Servicios: `BlueprintsServices` aplica filtros y orquesta persistencia.
+- Capa de Persistencia: `InMemoryBlueprintPersistence` mantiene datos en memoria (estructura thread-safe).
+- Filtros (Estrategia): Implementaciones de `BlueprintFilter` (Subsampling / Redundancy) aplicadas antes de retornar resultados.
 
-### Contexto
-Este repositorio contiene una aplicación de ejemplo basada en Spring Boot que expone una API REST para la gestión de "blueprints" (planos). El proyecto está diseñado para ilustrar conceptos fundamentales del desarrollo de servicios web RESTful usando el framework Spring Boot en Java.
+Patrones aplicados: Inversión de Dependencias, Inyección de Dependencias (Spring), Strategy (filtros), Repository (persistencia), DTO implícito (modelo expuesto directamente).
 
-## Componentes y conectores - Solución
-
-Este proyecto implementa la capa lógica de una aplicación para la gestión de planos arquitectónicos, usando Spring y un esquema de inyección de dependencias. Permite registrar, consultar y filtrar planos arquitectónicos de manera flexible y extensible.
-
-### Componentes principales
-
-- **BlueprintServices**: Servicio principal para la gestión de planos. Todas las operaciones de consulta pasan por aquí.
-- **BlueprintsPersistence**: Interfaz de persistencia. Implementación por defecto: `InMemoryBlueprintPersistence`.
-- **BlueprintFilter**: Interfaz para filtros de planos. Implementaciones:
-	- `RedundancyBlueprintFilter`: Elimina puntos consecutivos repetidos.
-	- `SubsamplingBlueprintFilter`: Elimina uno de cada dos puntos, de manera intercalada.
-
-### Inyección de dependencias
-
-La aplicación está configurada para que tanto el esquema de persistencia como el filtro de planos sean inyectados automáticamente mediante anotaciones de Spring (`@Autowired`, `@Qualifier`).  Para cambiar el filtro activo, basta con modificar el valor de `@Qualifier` en la inyección de `BlueprintFilter` en `BlueprintsServices`:
-
-```java
-@Autowired
-@Qualifier("redundancy") // o "subsampling"
-BlueprintFilter blueprintFilter;
+## 3. Estructura de Código (carpetas relevantes)
+```
+src/main/java/edu/BlueprintsMain.java                   # Entry point Spring Boot
+src/main/java/edu/eci/arsw/blueprints/controllers/      # REST controller
+src/main/java/edu/eci/arsw/blueprints/services/         # Servicios de dominio
+src/main/java/edu/eci/arsw/blueprints/persistence/      # Interfaces y excepciones
+src/main/java/edu/eci/arsw/blueprints/persistence/impl/ # Implementación en memoria
+src/main/java/edu/eci/arsw/blueprints/filter/           # Filtros de puntos
+src/main/java/edu/eci/arsw/blueprints/model/            # Entidades Blueprint / Point
+ANALISIS_CONCURRENCIA.txt                               # Revisión de concurrencia
 ```
 
-### Funcionalidad implementada
+## 4. Modelo de Datos Simplificado
+`Blueprint`: author, name, List<Point>.
+`Point`: x, y.
 
-- Registro de planos y consulta por nombre, autor o todos los planos.
-- Persistencia en memoria (`InMemoryBlueprintPersistence`).
-- Filtros configurables para reducir el tamaño de los planos antes de retornarlos.
-- Extensible para agregar nuevos filtros o esquemas de persistencia.
+## 5. Endpoints REST
+Base: `http://localhost:8080/blueprints`
 
-### Pruebas
+| Método | Ruta                              | Descripción                                  | Respuesta Éxito |
+|--------|-----------------------------------|----------------------------------------------|-----------------|
+| GET    | /blueprints                       | Lista todos los planos (filtrados)           | 202 Accepted    |
+| GET    | /blueprints/{author}              | Planos por autor                             | 202 o 404       |
+| GET    | /blueprints/{author}/{bprintname} | Un plano específico                          | 202 o 404       |
+| POST   | /blueprints                       | Crea un nuevo plano                          | 201 Created     |
+| PUT    | /blueprints                       | (Actualmente reusa create; mejora pendiente) | 201 / 403       |
 
-- **Unitarias**: Para cada filtro (`RedundancyBlueprintFilter`, `SubsamplingBlueprintFilter`), cubriendo casos normales y de borde.
+Notas:
+- PUT idealmente debería dirigirse a `/blueprints/{author}/{bprintname}` para actualización idempotente (pendiente refactor).
+- Códigos de error: 404 cuando no se encuentra plano/autor (persistencia lanza excepción). 403 al intentar crear duplicados.
 
-- **Integración**: Verifican que el filtro inyectado se aplique correctamente al consultar planos desde los servicios.
+## 6. Ejemplos curl
+Listar todos:
+```
+curl -i http://localhost:8080/blueprints
+```
+Por autor:
+```
+curl -i http://localhost:8080/blueprints/Karol
+```
+Plano específico:
+```
+curl -i http://localhost:8080/blueprints/Karol/House
+```
+Crear:
+```
+curl -i -X POST -H "Content-Type: application/json" -d '{
+  "author": "Ana",
+  "points": [ {"x":10, "y":10}, {"x":15, "y":25} ]
+  "name": "Studio",
+}' http://localhost:8080/blueprints
+```
+Respuesta esperada: `HTTP/1.1 201 Created`.
 
-## Cómo ejecutar el proyecto
+Intento duplicado (mismo author+name) -> 403 Forbidden.
 
-### Prerrequisitos
-- Java 8 o superior
-- Maven 3.6 o superior
+## 7. Filtros de Puntos
+- `SubsamplingBlueprintFilter` (activo por @Qualifier): toma cada 2 puntos.
+- `RedundancyBlueprintFilter`: elimina puntos consecutivos repetidos.
+Se puede cambiar el filtro modificando el `@Qualifier` inyectado en `BlueprintsServices`.
 
-### Compilar el proyecto
-```bash
+## 8. Concurrencia
+Ver en `ANALISIS_CONCURRENCIA.txt`.
+Resumen rápido:
+- Reemplazo de `HashMap` por `ConcurrentHashMap` para estructura thread-safe.
+- Inserción atómica mediante `putIfAbsent` evita condición de carrera (check-then-act).
+- Excepciones específicas distinguen autor/plano inexistente.
+- Lecturas usan vistas weakly consistent; suficiente para este escenario.
+
+## 9. Cómo Ejecutar
+Compilar y correr:
+```
 mvn clean package
+mvn spring-boot:run
 ```
+Aplicación expone puerto 8080 (config por defecto de Spring Boot starter web si presente en pom).
 
-### Ejecutar la aplicación
-```bash
-mvn exec:java
-```
+## 10. Manejo de Errores
+- 202 Accepted: peticiones GET exitosas.
+- 201 Created: creación o (actual actualización actual) exitosa.
+- 404 Not Found: recurso no existente.
+- 403 Forbidden: intento de crear duplicado.
+- 500 (si ocurriera): errores no controlados.
 
-### Ejecutar las pruebas
-```bash
-mvn test
-```
+## 11. Posibles Mejoras Futuras
+- Ajustar PUT a `/blueprints/{author}/{bpname}` con verificación de existencia y actualización idempotente.
+- Hacer `Blueprint` inmutable (copias defensivas de lista de puntos).
+- Validación de payload (Bean Validation @Valid + anotaciones).
+- Manejo global de errores con `@ControllerAdvice` y JSON unificado.
+- Tests de estrés concurrente (JMH o ThreadPool + assertions) para validar atomicidad.
 
-## Ejemplo de uso y pruebas
+## 12. Decisiones Clave
+| Tema         | Decisión | Justificación |
+|--------------|----------|---------------|
+| Persistencia | ConcurrentHashMap | Atomicidad y paralelismo sin bloqueos globales |
+| Filtro       | Strategy + Qualifier | Cambiar comportamiento sin tocar servicio |
+| HTTP Codes   | 202 en GET | Requisito del laboratorio |
+| Excepciones  | Personalizadas | Evitar uso de Exception genérica |
 
-### Uso de la aplicación
-Al ejecutar la aplicación, se presenta un menú interactivo que permite:
-1. Añadir un plano
-2. Buscar un plano por nombre
-3. Buscar planos por autor
-4. Salir de la aplicación
+## 13. Verificación Rápida Manual
+1. Levantar app.
+2. GET /blueprints -> lista inicial (Karol, Juan, etc.).
+3. POST nuevo plano -> 201.
+4. GET plano recién creado -> 202.
+5. POST repetido -> 403.
+6. GET autor inexistente -> 404.
 
-Al consultar un plano, el resultado ya vendrá filtrado según el filtro activo, sin necesidad de modificar el resto de la aplicación. Puedes cambiar el filtro simplemente cambiando la anotación `@Qualifier` en la configuración de Spring.
-
-### Pruebas disponibles
-El proyecto incluye pruebas unitarias y de integración que se pueden ejecutar con:
-```bash
-mvn test
-```
 ---
-# Autor 
-Juan Andres Rodriguez Peñuela
-
-
+Documento preparado para revisión rápida. Cualquier duda adicional: revisar clases en paquetes indicados.
